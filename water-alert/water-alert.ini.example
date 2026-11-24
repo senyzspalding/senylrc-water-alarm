@@ -1,0 +1,128 @@
+# water-alert configuration
+# After editing:  sudo systemctl restart water-alert
+# Lines starting with # are comments. Don't put comments on the same line as a value.
+
+[general]
+# Name used in texts and emails (e.g. "Southeastern WATER ALERT: ...")
+site_name = Southeastern
+log_level = INFO
+state_dir = /var/lib/water-alert
+# Email noc@ whenever the service starts, so unexpected restarts get noticed
+notify_on_start = true
+
+[email]
+smtp_host = localhost
+smtp_port = 25
+from = noreply@senylrc.org
+# Comma-separated
+to = noc@senylrc.org
+subject_prefix = [Water Alert]
+
+# --------------------------------------------------------------------------- Zoom texting
+[zoom]
+enabled = true
+# From your Zoom Marketplace "General App" (see README step 3)
+client_id =
+client_secret =
+# Must exactly match the OAuth redirect URL entered in the Zoom app
+redirect_uri = https://www.senylrc.org/zoom-oauth
+# Your Zoom Phone number. Texts are sent from this number.
+sender_number = +1XXXXXXXXXX
+# Filled in automatically by `water-alert zoom-auth`. Leave blank.
+sender_user_id =
+
+[sms_recipients]
+# name = phone number. Each person gets their own text, so nobody sees anyone else's number.
+# Zoom Phone numbers on the account:
+# zoom_front_desk = +18455550101
+# zoom_facilities = +18455550102
+# Outside phones:
+# cell_1 = +19145550123
+# cell_2 = +19145550124
+# cell_3 = +19145550125
+
+# --------------------------------------------------------------------------- how alerts go out
+[alerts]
+# While a texted (critical) alert is still active, send it again this often. 0 = once only.
+critical_repeat_minutes = 30
+# How often to repeat an email-only (warning) alert that is still active
+warning_repeat_minutes = 240
+# Also text when a critical alert clears ("CLEARED: ...")
+sms_on_clear = true
+
+[routing]
+# critical = text + email    warning = email only    off = log only
+shelly_flood = critical
+flume_high_flow = critical
+flume_continuous_flow = warning
+flume_leak = warning
+flume_quiet_hours = warning
+flume_offline = warning
+flume_low_battery = warning
+flume_api = warning
+shelly_silent = warning
+shelly_low_battery = warning
+mqtt_down = warning
+zoom_auth = warning
+
+# --------------------------------------------------------------------------- Shelly Flood Gen4
+[mqtt]
+host = localhost
+port = 1883
+username = wateralert
+password = __MQTT_SERVICE_PASSWORD__
+client_id = water-alert
+# Email if the broker is unreachable this long
+alert_after_minutes = 10
+
+[shelly]
+enabled = true
+# Email if a listed sensor hasn't sent anything in this many hours.
+# Battery sensors wake up on a schedule. Check `water-alert status` after a day and tune this.
+silence_hours = 25
+low_battery_percent = 20
+
+[shelly_sensors]
+# MQTT prefix (set in each sensor's MQTT settings) = friendly name used in alerts
+# shellyflood-basement = Basement water heater
+# shellyflood-laundry = Laundry room
+
+[webhook]
+# Optional second path: the Shelly calls http://<this server>:8765/shelly?sensor=...&state=alarm&token=...
+enabled = false
+listen = 0.0.0.0
+port = 8765
+token =
+
+# --------------------------------------------------------------------------- Flume
+[flume]
+# Off: no Flume installed. Turn on only if you add one later.
+enabled = false
+# portal.flumewater.com -> Settings -> API Access
+client_id =
+client_secret =
+# Your Flume account login
+username =
+password =
+# Leave blank to watch every Flume sensor on the account (run `water-alert test-flume` to list them)
+device_id =
+# Flume reports times in the home's local time zone
+timezone = America/New_York
+# 180 s = about 40 API calls/hour per sensor (Flume allows roughly 60-120/hour)
+poll_seconds = 180
+# A minute counts as "water running" at or above this flow
+running_gpm = 0.05
+# Burst-pipe check: this many gallons/min, every minute, for this many minutes
+high_flow_gpm = 5.0
+high_flow_minutes = 10
+# Running-toilet/slow-leak check: water flowing every minute for this long. 0 = off.
+continuous_flow_minutes = 60
+# Quiet hours: alert if at least quiet_gallons are used within quiet_minutes. Leave start/end blank to turn off.
+quiet_start = 23:00
+quiet_end = 05:00
+quiet_minutes = 10
+quiet_gallons = 1.0
+# Ignore the newest minutes, which Flume may not have uploaded yet
+data_delay_minutes = 2
+# Email if the Flume API keeps failing this long
+api_failure_minutes = 30

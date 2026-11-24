@@ -1,0 +1,20 @@
+[Unit]
+Description=Water leak/flow alerts (Shelly Flood + Flume -> Zoom SMS + email)
+After=network-online.target mosquitto.service postfix.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wateralert
+Group=wateralert
+ExecStart=/opt/water-alert/venv/bin/python /opt/water-alert/water_alert.py -c /etc/water-alert/water-alert.ini run
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/water-alert
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+*.pyc
+*.ini
+!*.ini.example
+state.json
+zoom_tokens.json
+*credentials*.txt
+*.passwd
+dev/dev-state/
+dev/events.json
+*.tar.gz
+CLAUDE.md
