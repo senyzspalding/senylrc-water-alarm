@@ -11,3 +11,13 @@ dev/dev-state/
 dev/events.json
 *.tar.gz
 CLAUDE.md
+
+# TLS material and other secrets (never commit)
+*.key
+*.pem
+*.crt
+*.srl
+*.csr
+tls/
+.env
+*.bak

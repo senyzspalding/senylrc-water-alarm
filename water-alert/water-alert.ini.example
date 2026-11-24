@@ -67,6 +67,7 @@ zoom_auth = warning
 
 # --------------------------------------------------------------------------- Shelly Flood Gen4
 [mqtt]
+# The service connects to the broker on this machine. Keep it on localhost so this link never crosses the network.
 host = localhost
 port = 1883
 username = wateralert

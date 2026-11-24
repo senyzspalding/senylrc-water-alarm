@@ -117,7 +117,34 @@ Add each sensor to the config, using its prefix and a friendly name:
 shellyflood-basement = Basement water heater
 ```
 
-If `ufw` is on, allow your LAN to reach port 1883 (install.sh prints the command).
+If `ufw` is on, allow only the sensor subnet to reach the MQTT port (install.sh prints the command, or pass `MQTT_ALLOW_FROM=<subnet>`).
+
+### Securing the sensor connection
+
+By default the broker listens on port 1883 with a password but **no encryption**, so anyone who can see that traffic can read the `shelly` password and the sensor messages. Pick one or both:
+
+1. **Isolate the sensors.** Put them on their own VLAN/Wi-Fi and firewall them so they can reach only this server, on only the MQTT port (TCP 1883, or 8883 with TLS). Block every other path to and from the sensor network.
+2. **Encrypt with TLS.** Re-run the installer with TLS on:
+
+   ```bash
+   sudo MQTT_TLS=1 ./install.sh
+   ```
+
+   This keeps 1883 working, adds a TLS listener on **8883**, and creates a private CA in `/etc/water-alert/tls/` (the CA key stays there, root only). Then, for each sensor, while it is awake:
+
+   - Upload `/etc/mosquitto/certs/ca.crt` with the RPC `Shelly.PutUserCA` (or the device web page's certificate upload).
+   - `MQTT.SetConfig` with server `<server IP>:8883` and `ssl_ca` = `user_ca.pem`, then `Shelly.Reboot`.
+   - Check `sudo water-alert status` and test with a wet towel. Confirm against Shelly's Gen4 documentation for your firmware, since the exact field names and TLS options can differ between versions.
+
+   Once **all** sensors work over 8883, close the plaintext port to the network:
+
+   ```bash
+   sudo MQTT_TLS=1 MQTT_PLAIN_LAN=0 ./install.sh
+   ```
+
+   The water-alert service talks to the broker over `localhost:1883`, which stays available on the server itself. The server certificate is valid for 10 years and names the server's IP, so re-issue it (delete `/etc/water-alert/tls/server.crt`, re-run the installer, restart mosquitto) if the server's IP changes. Sensors keep trusting the same CA.
+
+Rotate the MQTT passwords if they were ever shared in a chat or email. Edit them with `mosquitto_passwd`, then update the `shelly` login on each sensor and `[mqtt] password` in the config.
 
 Test by touching the sensor cable with a wet paper towel.
 
@@ -143,4 +170,6 @@ After a day, run `status` to see how often each Flood checks in on its own. Set 
 | `/opt/water-alert/` | program + Python venv |
 | `/etc/water-alert/water-alert.ini` | config (readable by root and the service only) |
 | `/var/lib/water-alert/` | alert state and Zoom tokens |
-| `/etc/mosquitto/conf.d/water-alert.conf` | broker listener with password login |
+| `/etc/mosquitto/conf.d/water-alert.conf` | broker listeners with password login (plus TLS on 8883 if enabled) |
+| `/etc/water-alert/tls/` | private CA and server certificate (only if TLS enabled, root only) |
+| `/etc/mosquitto/certs/` | CA cert, server cert and key the broker reads (only if TLS enabled) |
