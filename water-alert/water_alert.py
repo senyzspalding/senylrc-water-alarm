@@ -1241,6 +1241,33 @@ def cmd_test_sms(cfg, args):
     sys.exit(0 if all(r[2] for r in results) else 1)
 
 
+def cmd_send_sms(cfg, args):
+    """Send a custom text to every recipient, or to --to NUMBER, for example to say that an
+    alert was only a test. The text is prefixed with the site name, folded to ASCII and capped
+    at 300 characters, like alert texts. Asks for confirmation unless --yes is given. Exits
+    non-zero if any send failed.
+    """
+    _, _, _, sms, _ = build(cfg, ephemeral=True)
+    if sms is None:
+        raise SystemExit("[zoom] enabled = false in the config")
+    targets = [("command line", normalize_number(args.to))] if args.to else sms.recipients
+    if not targets:
+        raise SystemExit("No [sms_recipients] configured (or use --to NUMBER)")
+    message = " ".join(args.message).strip()
+    if not message:
+        raise SystemExit("Give the text to send, for example: send-sms \"That alert was a test.\"")
+    text = ascii_only(f"{site_name(cfg)} water alerts: {message}")[:300]
+    print(f"Text ({len(text)} characters):\n  {text}\nTo:")
+    for name, number in targets:
+        print(f"  {name:20} {number}")
+    if not args.yes and input("Send this text? [y/N] ").strip().lower() not in ("y", "yes"):
+        raise SystemExit("Not sent.")
+    results = sms.send(text, targets)
+    for name, number, ok, detail in results:
+        print(f"{'OK  ' if ok else 'FAIL'} {name:20} {number:15} {detail}")
+    sys.exit(0 if all(r[2] for r in results) else 1)
+
+
 def cmd_test_flume(cfg, args):
     """Sign in to Flume and print devices, the last 15 minutes of flow and leak status."""
     api = FlumeClient(cfg)
@@ -1306,6 +1333,10 @@ def main():
     sub.add_parser("test-email")
     p = sub.add_parser("test-sms")
     p.add_argument("--to", help="send only to this number")
+    p = sub.add_parser("send-sms", help="send a custom text to every recipient (e.g. 'that alert was a test')")
+    p.add_argument("message", nargs="+", help="text to send (the site name is added in front)")
+    p.add_argument("--to", help="send only to this number")
+    p.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
     sub.add_parser("test-flume")
     p = sub.add_parser("simulate-leak")
     p.add_argument("--sensor", help="sensor name to show in the test alert")
@@ -1321,7 +1352,7 @@ def main():
 
     handlers = {
         "run": cmd_run, "zoom-auth": cmd_zoom_auth, "test-email": cmd_test_email,
-        "test-sms": cmd_test_sms, "test-flume": cmd_test_flume,
+        "test-sms": cmd_test_sms, "send-sms": cmd_send_sms, "test-flume": cmd_test_flume,
         "simulate-leak": cmd_simulate, "status": cmd_status,
     }
     try:

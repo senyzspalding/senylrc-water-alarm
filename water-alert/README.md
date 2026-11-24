@@ -80,6 +80,15 @@ sudo water-alert test-sms                   # every recipient
 sudo water-alert test-sms --to 8455551234   # one number
 ```
 
+To tell people an alert was only a test, send a custom text. It shows the text and the recipients first and asks for a yes (add `--yes` to skip that):
+
+```bash
+sudo water-alert send-sms "The water alert you just received was a TEST. No leak, no action needed."
+sudo water-alert send-sms --to 8455551234 "Test over, thanks."
+```
+
+The site name goes in front, and the text is capped at 300 characters.
+
 ## 4. Flume
 
 1. At portal.flumewater.com → Settings → **API Access**, copy the client ID and secret.
