@@ -60,7 +60,6 @@ flume_quiet_hours = warning
 flume_offline = warning
 flume_low_battery = warning
 flume_api = warning
-shelly_silent = warning
 shelly_low_battery = warning
 mqtt_down = warning
 zoom_auth = warning
@@ -78,9 +77,6 @@ alert_after_minutes = 10
 
 [shelly]
 enabled = true
-# Email if a listed sensor hasn't sent anything in this many hours.
-# Battery sensors wake up on a schedule. Check `water-alert status` after a day and tune this.
-silence_hours = 25
 low_battery_percent = 20
 
 [shelly_sensors]

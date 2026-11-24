@@ -16,7 +16,6 @@ Leak and water-flow alerts on an Ubuntu server.
 | Water running nonstop | Water flowing every minute for 60 min (running toilet, slow leak) | Email |
 | Flume leak | Flume's own leak detection flags a leak | Email |
 | Quiet-hours use | 1+ gallon used within 10 min between 23:00 and 05:00 | Email |
-| Sensor silent | A listed Shelly hasn't checked in for 25 h | Email |
 | Low battery / Flume offline / MQTT down / Flume API down | — | Email |
 | Zoom texting broken | Zoom sign-in can't refresh (checked twice a day) | Email |
 
@@ -158,10 +157,10 @@ and the alarm-off event at the same URL with `state=clear`.
 sudo systemctl enable --now water-alert
 journalctl -u water-alert -f          # live log
 sudo water-alert simulate-leak        # fake leak: full text + email path, marked TEST
-sudo water-alert status               # active alerts, last check-in per sensor, Zoom sign-in
+sudo water-alert status               # active alerts, last message per sensor, Zoom sign-in
 ```
 
-After a day, run `status` to see how often each Flood checks in on its own. Set `silence_hours` a little above that.
+The Flood sensors only connect to MQTT when they have an alarm to send, so there is no "sensor silent" alert, and `status` will show old times for quiet sensors. Test each sensor with a wet towel now and then, and check that the text arrives.
 
 ## Files
 

@@ -69,7 +69,6 @@ DEFAULT_ROUTING = {
     "flume_offline": WARNING,
     "flume_low_battery": WARNING,
     "flume_api": WARNING,
-    "shelly_silent": WARNING,
     "shelly_low_battery": WARNING,
     "mqtt_down": WARNING,
     "zoom_auth": WARNING,
@@ -593,7 +592,6 @@ class ShellyMonitor:
         self.password = cfg.get("mqtt", "password")
         self.client_id = cfg.get("mqtt", "client_id", "water-alert")
         self.mqtt_down_after = cfg.getint("mqtt", "alert_after_minutes", 10) * 60
-        self.silence = cfg.getfloat("shelly", "silence_hours", 25) * 3600
         self.low_batt = cfg.getint("shelly", "low_battery_percent", 20)
         self.started = time.time()
         self.connected = False
@@ -726,12 +724,9 @@ class ShellyMonitor:
                     self._battery(prefix, pct)
 
     def _seen(self, prefix):
-        """Record a check-in and clear a 'sensor silent' alert if one was active."""
+        """Record when a sensor last sent anything (shown by 'status'; no alerting depends on it)."""
         with self.state.lock:
             self.state.data["last_seen"][prefix] = time.time()
-        key = f"shelly_silent:{prefix}"
-        if self.alerter.is_active(key):
-            self.alerter.clear(key, f"{self.name_for(prefix)} is checking in again")
 
     def flood(self, prefix, comp, alarm, source):
         """Fire the water-detected alert (alarm=True) or clear it (alarm=False) for one flood
@@ -776,21 +771,11 @@ class ShellyMonitor:
 
     # --- periodic checks
     def check(self):
-        """Periodic watchdog (called every 15 s): alerts for sensors silent longer than
-        silence_hours (sensors sleep and wake about every 12 h, so the default is 25 h) and
-        for the broker being unreachable too long.
+        """Periodic watchdog (called every 15 s): alert if the broker has been unreachable too
+        long. There is deliberately no 'sensor silent' check: these battery sensors only connect
+        to MQTT when they have an alarm to send, so silence is normal.
         """
         now = time.time()
-        last_seen = self.state.data["last_seen"]
-        for prefix, name in self.sensors.items():
-            seen = last_seen.get(prefix)
-            last = seen or self.started
-            if now - last > self.silence:
-                when = fmt_time(seen) if seen else "nothing received since the service started"
-                self.alerter.fire(
-                    f"shelly_silent:{prefix}", "shelly_silent",
-                    f"No check-in from {name} in {fmt_duration(now - last)}",
-                    f"Last message: {when}.\nCheck the sensor's batteries and its Wi-Fi/MQTT settings.")
         if (not self.connected and self.disconnected_since
                 and now - self.disconnected_since > self.mqtt_down_after):
             self.alerter.fire(
@@ -1137,7 +1122,13 @@ def cmd_run(cfg, args):
     if cfg.getbool("shelly", "enabled", True):
         shelly = ShellyMonitor(cfg, state, alerter)
         # Forget check-ins from names no longer in [shelly_sensors] (renamed or removed sensors).
+        # Also drop leftover 'sensor silent' alerts from older versions, which can never clear now.
         with state.lock:
+            stale = [k for k in state.data["alerts"] if k.startswith("shelly_silent:")]
+            for k in stale:
+                del state.data["alerts"][k]
+            if stale:
+                state.save()
             for prefix in [p for p in state.data["last_seen"] if p not in shelly.sensors]:
                 del state.data["last_seen"][prefix]
         shelly.start()
@@ -1285,7 +1276,7 @@ def cmd_simulate(cfg, args):
 
 
 def cmd_status(cfg, args):
-    """Print active alerts, last check-in per sensor and Zoom sign-in status (read-only)."""
+    """Print active alerts, last message per sensor and Zoom sign-in status (read-only)."""
     state_dir = cfg.get("general", "state_dir", "/var/lib/water-alert")
     data = read_json(os.path.join(state_dir, "state.json"), {})
     alerts = data.get("alerts", {})
@@ -1293,7 +1284,7 @@ def cmd_status(cfg, args):
     print("Active alerts:" if active else "Active alerts: none")
     for k, a in active.items():
         print(f"  {a.get('subject', k)}  (since {fmt_time(a.get('since'))})")
-    print("\nSensor check-ins:")
+    print("\nLast message from each sensor (they only connect when they have an alarm to send):")
     sensors = cfg.section("shelly_sensors")
     seen = data.get("last_seen", {})
     for prefix in sorted(set(sensors) | set(seen)):

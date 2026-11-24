@@ -8,7 +8,7 @@ Leak alerting for a small building, on a single Ubuntu server. Shelly Flood Gen4
 
 - **Local first.** Sensors talk to your own broker, so leak alerts don't depend on the Shelly cloud.
 - **Texts and email.** Critical alerts go to every recipient as a separate text, then to email. A texting failure never blocks the email.
-- **Watchdogs.** Email warnings for silent sensors, low batteries, a down broker, and a broken Zoom sign-in.
+- **Watchdogs.** Email warnings for low batteries, a down broker, and a broken Zoom sign-in.
 - **Optional Flume support** for whole-house flow monitoring (high flow, nonstop flow, quiet-hours use).
 - **Encrypted sensor link (optional).** TLS on the MQTT listener with a private CA.
 - Small codebase: one Python file, `requests` and `paho-mqtt`.
