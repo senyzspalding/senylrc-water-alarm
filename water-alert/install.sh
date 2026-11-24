@@ -71,7 +71,7 @@ if [[ $MQTT_TLS == 1 ]]; then
   echo "==> TLS certificates for the sensor listener"
   install -d -m 700 "$TLS_SRC"
   SAN_ARGS=(); [[ -n $MQTT_TLS_SAN ]] && IFS=, read -r -a SAN_ARGS <<< "$MQTT_TLS_SAN"
-  "$SRC/make-mqtt-certs.sh" "$TLS_SRC" "$IP" "${SAN_ARGS[@]}"
+  bash "$SRC/make-mqtt-certs.sh" "$TLS_SRC" "$IP" "${SAN_ARGS[@]}"
   install -d -m 755 "$TLS_DEST"
   install -m 644 "$TLS_SRC/ca.crt" "$TLS_SRC/server.crt" "$TLS_DEST/"
   install -m 640 -o root -g mosquitto "$TLS_SRC/server.key" "$TLS_DEST/server.key"
