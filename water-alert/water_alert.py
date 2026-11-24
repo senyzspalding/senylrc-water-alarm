@@ -79,11 +79,13 @@ DEFAULT_ROUTING = {
 # ----------------------------------------------------------------------------- helpers
 
 def fmt_time(ts=None):
+    """Format a Unix timestamp (default: now) as local, human-readable text for messages."""
     t = dt.datetime.fromtimestamp(ts).astimezone() if ts else dt.datetime.now().astimezone()
     return t.strftime("%a %b %d %Y, %I:%M %p %Z").replace(" 0", " ")
 
 
 def fmt_duration(sec):
+    """Format a number of seconds as '2h 5m' or '12m'."""
     sec = int(max(0, sec))
     h, rem = divmod(sec, 3600)
     m = rem // 60
@@ -97,6 +99,9 @@ def ascii_only(text):
 
 
 def write_json_atomic(path, obj, mode=0o600):
+    """Write obj as JSON via a temp file + rename, so a crash never leaves a half-written file.
+    File mode defaults to 0600 (tokens/state are private).
+    """
     tmp = f"{path}.tmp.{os.getpid()}"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
     with os.fdopen(fd, "w") as f:
@@ -107,6 +112,9 @@ def write_json_atomic(path, obj, mode=0o600):
 
 
 def read_json(path, default):
+    """Load JSON from path; return default if the file is missing or corrupt (corruption is
+    logged).
+    """
     try:
         with open(path) as f:
             return json.load(f)
@@ -133,6 +141,9 @@ E164 = re.compile(r"^\+[1-9]\d{7,14}$")
 
 
 def normalize_number(raw):
+    """Convert a US-style phone number to E.164 (+1XXXXXXXXXX). Raises ValueError if it isn't
+    valid.
+    """
     s = re.sub(r"[^\d+]", "", raw.strip())
     if not s.startswith("+"):
         if len(s) == 10:
@@ -145,11 +156,13 @@ def normalize_number(raw):
 
 
 def parse_hhmm(s):
+    """Parse 'HH:MM' into a datetime.time."""
     h, m = s.strip().split(":")
     return dt.time(int(h), int(m))
 
 
 def in_window(t, start, end):
+    """True if time t is in [start, end). Handles windows that cross midnight (e.g. 23:00-05:00)."""
     if start <= end:
         return start <= t < end
     return t >= start or t < end
@@ -158,7 +171,12 @@ def in_window(t, start, end):
 # ----------------------------------------------------------------------------- config / state
 
 class Config:
+    """INI config wrapper. Every getter takes a code default, so new keys never break an older
+    water-alert.ini. Interpolation is off and key case is kept (sensor prefixes are case-
+    sensitive); don't use inline comments, since '#' may be part of a password.
+    """
     def __init__(self, path):
+        """Read the INI file at path; exit with a clear message if it can't be read."""
         self.path = path
         self.cp = configparser.ConfigParser(interpolation=None)
         self.cp.optionxform = str  # keep the case of sensor prefixes and names
@@ -166,23 +184,28 @@ class Config:
             raise SystemExit(f"Config file not found or not readable: {path}")
 
     def get(self, section, key, default=""):
+        """Return the stripped string value, or default if the section/key is missing."""
         return self.cp.get(section, key, fallback=default).strip()
 
     def getint(self, section, key, default):
+        """Integer value; default if unset or blank."""
         v = self.get(section, key)
         return int(v) if v else default
 
     def getfloat(self, section, key, default):
+        """Float value; default if unset or blank."""
         v = self.get(section, key)
         return float(v) if v else default
 
     def getbool(self, section, key, default):
+        """Boolean value (1/true/yes/on); default if unset or blank."""
         v = self.get(section, key).lower()
         if not v:
             return default
         return v in ("1", "true", "yes", "on")
 
     def section(self, name):
+        """Return a whole section as {key: value}, or {} if the section doesn't exist."""
         if not self.cp.has_section(name):
             return {}
         return {k: v.strip() for k, v in self.cp.items(name)}
@@ -192,6 +215,10 @@ class State:
     """Small JSON store for alert state and sensor check-ins. path=None keeps it in memory."""
 
     def __init__(self, path=None):
+        """Load state from path (None = in-memory only, used by CLI test commands so they never
+        touch live state). Layout: 'alerts' {key: {active, since, kind, subject, last_sent}}
+        and 'last_seen' {sensor prefix: timestamp}.
+        """
         self.path = path
         self.lock = threading.RLock()
         self.data = read_json(path, {}) if path else {}
@@ -202,6 +229,7 @@ class State:
         self._saved = None
 
     def save(self):
+        """Persist state atomically. Skips the write when nothing changed."""
         if not self.path:
             return
         with self.lock:
@@ -218,7 +246,11 @@ class State:
 # ----------------------------------------------------------------------------- email
 
 class Mailer:
+    """Sends email through an SMTP server (the local postfix relay by default)."""
     def __init__(self, cfg):
+        """Read [email] settings: smtp_host, smtp_port, from, to (comma-separated),
+        subject_prefix.
+        """
         self.host = cfg.get("email", "smtp_host", "localhost")
         self.port = cfg.getint("email", "smtp_port", 25)
         self.sender = cfg.get("email", "from", "noreply@localhost")
@@ -226,6 +258,9 @@ class Mailer:
         self.prefix = cfg.get("email", "subject_prefix", "[Water Alert]")
 
     def send(self, subject, body):
+        """Send a plain-text email to all recipients. Raises on SMTP errors; callers decide how
+        to handle that.
+        """
         if not self.to:
             log.warning("no email recipients configured; skipping email: %s", subject)
             return
@@ -244,6 +279,9 @@ class Mailer:
 # ----------------------------------------------------------------------------- Zoom SMS
 
 class ZoomAuthError(Exception):
+    """Raised when Zoom sign-in is missing, expired or rejected. The fix is always: run 'water-
+    alert zoom-auth'.
+    """
     pass
 
 
@@ -251,6 +289,9 @@ class ZoomSMS:
     """Sends texts as one Zoom Phone user (the one who ran zoom-auth), from their own number."""
 
     def __init__(self, cfg, state_dir):
+        """Read [zoom] and [sms_recipients]. Tokens live in <state_dir>/zoom_tokens.json, guarded
+        by a lock file.
+        """
         self.client_id = cfg.get("zoom", "client_id")
         self.client_secret = cfg.get("zoom", "client_secret")
         self.redirect_uri = cfg.get("zoom", "redirect_uri")
@@ -267,6 +308,7 @@ class ZoomSMS:
 
     # --- OAuth
     def authorize_url(self):
+        """URL the user opens (signed in to Zoom as the sender) to approve the app."""
         q = urllib.parse.urlencode({
             "response_type": "code",
             "client_id": self.client_id,
@@ -275,6 +317,9 @@ class ZoomSMS:
         return f"{ZOOM_OAUTH}/authorize?{q}"
 
     def _token_request(self, data):
+        """POST to Zoom's token endpoint (authorization-code or refresh). Stamps 'expires_at'
+        with a 2-minute safety margin.
+        """
         if not self.client_id or not self.client_secret:
             raise ZoomAuthError("client_id / client_secret are not set in [zoom]")
         try:
@@ -289,6 +334,7 @@ class ZoomSMS:
         return tok
 
     def exchange_code(self, code):
+        """Trade the one-time authorization code from zoom-auth for tokens and save them."""
         tok = self._token_request({
             "grant_type": "authorization_code",
             "code": code,
@@ -299,6 +345,11 @@ class ZoomSMS:
 
     def access_token(self, force_refresh=False):
         # Zoom refresh tokens are single-use, so always work from the copy on disk.
+        """Return a valid access token, refreshing if expired or force_refresh. Zoom refresh
+        tokens are SINGLE-USE, so this always re-reads the token file under a cross-process
+        lock; the daemon and a CLI test can't invalidate each other's chain. Keep that pattern
+        for every token read/refresh.
+        """
         with self._tlock, file_lock(self.lock_path):
             tok = read_json(self.token_path, None)
             if not tok or "refresh_token" not in tok:
@@ -315,9 +366,13 @@ class ZoomSMS:
             return tok["access_token"]
 
     def stored(self, key):
+        """Read one value from the saved token file (e.g. 'user_id'), or None."""
         return (read_json(self.token_path, {}) or {}).get(key)
 
     def api(self, method, path, **kw):
+        """Call the Zoom API with auth. Retries: once with a forced token refresh on 401; up to 3
+        times with backoff on network errors, 429 and 5xx. Returns the final Response.
+        """
         force = False
         r = None
         for attempt in range(4):
@@ -341,6 +396,9 @@ class ZoomSMS:
         return r
 
     def whoami(self):
+        """Look up the signed-in Zoom user, save their id/email to the token file, and list their
+        Zoom Phone numbers. Returns (user_dict, [numbers]).
+        """
         r = self.api("GET", "/users/me")
         if r.status_code != 200:
             raise ZoomAuthError(f"could not read your Zoom user ({r.status_code}): {r.text[:300]}")
@@ -357,6 +415,9 @@ class ZoomSMS:
         return me, numbers
 
     def user_id(self):
+        """Zoom user id used as the SMS sender (config override, else the one saved by zoom-
+        auth).
+        """
         uid = self.sender_user_id_cfg or self.stored("user_id")
         if not uid:
             raise ZoomAuthError("Zoom sender user id unknown - run: sudo water-alert zoom-auth")
@@ -393,7 +454,15 @@ class ZoomSMS:
 # ----------------------------------------------------------------------------- alert routing
 
 class Alerter:
+    """Decides what each alert does. fire()/clear() are de-duplicated by KEY, so one ongoing
+    condition alerts once and then repeats on a timer. [routing] maps each alert kind to
+    critical (text + email), warning (email only) or off. State is persisted, so alerts
+    survive restarts.
+    """
     def __init__(self, cfg, state, mailer, sms):
+        """Load [routing] overrides and [alerts] timers (critical_repeat_minutes,
+        warning_repeat_minutes, sms_on_clear).
+        """
         self.state, self.mailer, self.sms = state, mailer, sms
         self.routing = dict(DEFAULT_ROUTING)
         for k, v in cfg.section("routing").items():
@@ -410,9 +479,11 @@ class Alerter:
         self.lock = threading.RLock()
 
     def severity(self, kind):
+        """Routing for an alert kind: critical, warning or off (unknown kinds are warning)."""
         return self.routing.get(kind, WARNING)
 
     def is_active(self, key):
+        """True if the alert with this key is currently active."""
         with self.lock:
             return bool(self.state.data["alerts"].get(key, {}).get("active"))
 
@@ -443,6 +514,10 @@ class Alerter:
         return True
 
     def clear(self, key, subject, detail=""):
+        """Report that a condition ended. Sends a 'CLEARED' message only if the alert was active,
+        and returns True when it did. A critical clear is downgraded to email-only if
+        sms_on_clear is false.
+        """
         with self.lock:
             a = self.state.data["alerts"].get(key)
             if not a or not a.get("active"):
@@ -462,6 +537,10 @@ class Alerter:
         return True
 
     def _dispatch(self, sev, title, detail, since):
+        """Build and send one alert. Critical: text every recipient first, then ALWAYS email (SMS
+        failures are listed in the email body, and a texting bug never blocks the email).
+        Texts are ASCII-folded and capped at 300 chars.
+        """
         lines = [title, ""]
         if detail:
             lines += [detail, ""]
@@ -499,7 +578,13 @@ class Alerter:
 # ----------------------------------------------------------------------------- Shelly Flood (MQTT)
 
 class ShellyMonitor:
+    """Listens to Shelly Flood Gen4 sensors over MQTT and turns water/battery/check-in events
+    into alerts. Topics are '<prefix>/events/rpc', '<prefix>/status/<component>' and
+    '<prefix>/online'. Each prefix must match the sensor's MQTT topic_prefix and its key in
+    [shelly_sensors] exactly.
+    """
     def __init__(self, cfg, state, alerter):
+        """Read [mqtt], [shelly] and [shelly_sensors] (prefix -> friendly name)."""
         self.state, self.alerter = state, alerter
         self.sensors = cfg.section("shelly_sensors")  # mqtt prefix -> friendly name
         self.host = cfg.get("mqtt", "host", "localhost")
@@ -516,9 +601,14 @@ class ShellyMonitor:
         self.client = None
 
     def name_for(self, prefix):
+        """Friendly name for a sensor prefix, or the prefix itself if it isn't listed."""
         return self.sensors.get(prefix) or prefix
 
     def _split(self, topic):
+        """Split a topic into (sensor prefix, rest). Matches listed prefixes first (longest wins,
+        so prefixes may contain '/'); otherwise the prefix is the first path segment, so an
+        unlisted sensor still alerts.
+        """
         for p in sorted(self.sensors, key=len, reverse=True):
             if topic.startswith(p + "/"):
                 return p, topic[len(p) + 1:]
@@ -527,6 +617,9 @@ class ShellyMonitor:
 
     # --- connection
     def start(self):
+        """Connect to the broker in a background thread (auto-reconnects). Supports paho-mqtt 2.x
+        and 1.x.
+        """
         if mqtt is None:
             raise SystemExit("paho-mqtt is not installed (pip install paho-mqtt)")
         try:
@@ -544,11 +637,13 @@ class ShellyMonitor:
         self.client = c
 
     def stop(self):
+        """Disconnect and stop the MQTT thread."""
         if self.client:
             self.client.disconnect()
             self.client.loop_stop()
 
     def _on_connect(self, client, userdata, flags, rc, properties=None):
+        """On (re)connect: subscribe to sensor topics and clear any 'MQTT down' alert."""
         failed = rc.is_failure if hasattr(rc, "is_failure") else rc != 0
         if failed:
             log.error("MQTT broker refused the connection: %s (check [mqtt] username/password)", rc)
@@ -563,6 +658,7 @@ class ShellyMonitor:
         self.alerter.clear("mqtt_down", "MQTT broker connection restored")
 
     def _on_disconnect(self, client, userdata, *args):
+        """Record when the broker connection dropped; check() alerts if it stays down."""
         self.connected = False
         if self.disconnected_since is None:
             self.disconnected_since = time.time()
@@ -571,6 +667,11 @@ class ShellyMonitor:
     def _on_message(self, client, userdata, msg):
         # Retained messages are old news the broker replays on connect. Counting them would make
         # a dead sensor look alive after every restart, and could replay a stale alarm.
+        """MQTT message callback. Drops RETAINED messages: Shellys publish '<prefix>/online'
+        retained, so the broker replays it on every subscribe. Counting it would make a dead
+        sensor look alive after a restart, and a stale retained alarm could re-fire. Do not
+        remove this check.
+        """
         if msg.retain:
             log.debug("ignoring retained message on %s", msg.topic)
             return
@@ -581,6 +682,9 @@ class ShellyMonitor:
 
     # --- message handling
     def handle(self, topic, payload):
+        """Process one message. Any status/online/rpc message counts as a check-in. Handles
+        NotifyStatus / NotifyFullStatus (flood alarm, battery) and NotifyEvent 'alarm'.
+        """
         prefix, rest = self._split(topic)
         if not (rest in ("online", "events/rpc") or rest.startswith("status/")):
             return
@@ -608,6 +712,9 @@ class ShellyMonitor:
             self._status(prefix, {rest[len("status/"):]: data})
 
     def _status(self, prefix, params):
+        """Act on component status: 'flood:N' alarm true/false and 'devicepower:N' battery
+        percent.
+        """
         for comp, val in params.items():
             if not isinstance(val, dict):
                 continue
@@ -619,6 +726,7 @@ class ShellyMonitor:
                     self._battery(prefix, pct)
 
     def _seen(self, prefix):
+        """Record a check-in and clear a 'sensor silent' alert if one was active."""
         with self.state.lock:
             self.state.data["last_seen"][prefix] = time.time()
         key = f"shelly_silent:{prefix}"
@@ -626,6 +734,9 @@ class ShellyMonitor:
             self.alerter.clear(key, f"{self.name_for(prefix)} is checking in again")
 
     def flood(self, prefix, comp, alarm, source):
+        """Fire the water-detected alert (alarm=True) or clear it (alarm=False) for one flood
+        component. 'source' (event/status/webhook) only appears in the message.
+        """
         name = self.name_for(prefix)
         key = f"shelly_flood:{prefix}:{comp}"
         if alarm:
@@ -636,6 +747,9 @@ class ShellyMonitor:
                                f"Shelly Flood sensor '{name}' no longer reports water.")
 
     def _battery(self, prefix, pct):
+        """Low-battery alert at or below low_battery_percent; clears with 5 points of hysteresis
+        to avoid flapping.
+        """
         name = self.name_for(prefix)
         key = f"shelly_battery:{prefix}"
         if pct <= self.low_batt:
@@ -645,6 +759,9 @@ class ShellyMonitor:
             self.alerter.clear(key, f"Battery OK - {name} ({pct:.0f}%)")
 
     def webhook(self, sensor, state):
+        """Handle the optional HTTP webhook. state: alarm/wet/on/true/1 or clear/dry/off/false/0.
+        Returns False for an unrecognized state.
+        """
         prefix = sensor if sensor in self.sensors else next(
             (p for p, n in self.sensors.items() if n.lower() == sensor.lower()), sensor)
         if state in ("alarm", "wet", "on", "true", "1"):
@@ -659,6 +776,10 @@ class ShellyMonitor:
 
     # --- periodic checks
     def check(self):
+        """Periodic watchdog (called every 15 s): alerts for sensors silent longer than
+        silence_hours (sensors sleep and wake about every 12 h, so the default is 25 h) and
+        for the broker being unreachable too long.
+        """
         now = time.time()
         last_seen = self.state.data["last_seen"]
         for prefix, name in self.sensors.items():
@@ -679,6 +800,10 @@ class ShellyMonitor:
 
 
 def start_webhook(cfg, shelly):
+    """Start the optional HTTP listener (/shelly?sensor=...&state=...&token=...) in a daemon
+    thread. Requests need the shared token (constant-time compare); anything else gets 404.
+    Returns the server, or None if no token is set.
+    """
     token = cfg.get("webhook", "token")
     if not token:
         log.error("[webhook] is enabled but has no token; not starting it")
@@ -687,7 +812,9 @@ def start_webhook(cfg, shelly):
     port = cfg.getint("webhook", "port", 8765)
 
     class Handler(BaseHTTPRequestHandler):
+        """HTTP handler for the webhook. GET and POST behave the same."""
         def do_GET(self):
+            """Validate path and token, then pass sensor/state to ShellyMonitor.webhook()."""
             u = urllib.parse.urlparse(self.path)
             q = {k: v[0] for k, v in urllib.parse.parse_qs(u.query).items()}
             if u.path.rstrip("/") != "/shelly" or not hmac.compare_digest(q.get("token", ""), token):
@@ -702,6 +829,7 @@ def start_webhook(cfg, shelly):
         do_POST = do_GET
 
         def log_message(self, fmt, *args):
+            """Route access logs to debug logging."""
             log.debug("webhook %s: %s", self.client_address[0], fmt % args)
 
     srv = ThreadingHTTPServer((listen, port), Handler)
@@ -713,11 +841,16 @@ def start_webhook(cfg, shelly):
 # ----------------------------------------------------------------------------- Flume
 
 class FlumeError(Exception):
+    """Raised for Flume API/sign-in problems."""
     pass
 
 
 class FlumeClient:
+    """Minimal Flume cloud API client (password-grant OAuth). Unused at this site (no water
+    meter) but kept for reuse.
+    """
     def __init__(self, cfg):
+        """Read Flume credentials and timezone from [flume]."""
         self.creds = {
             "grant_type": "password",
             "client_id": cfg.get("flume", "client_id"),
@@ -732,6 +865,7 @@ class FlumeClient:
         self.user_id = None
 
     def login(self):
+        """Sign in; store the bearer token and read the user id from its JWT payload."""
         if not all(self.creds[k] for k in ("client_id", "client_secret", "username", "password")):
             raise FlumeError("Flume credentials are incomplete in [flume]")
         try:
@@ -751,6 +885,9 @@ class FlumeClient:
         self.expires = time.time() + int(d.get("expires_in", 3600)) - 300
 
     def request(self, method, path, **kw):
+        """Call the API, signing in as needed (one re-login on 401). '{uid}' in path is replaced
+        with the user id. Returns parsed JSON or raises FlumeError.
+        """
         for attempt in (0, 1):
             if not self.token or time.time() >= self.expires:
                 self.login()
@@ -777,6 +914,7 @@ class FlumeClient:
         raise FlumeError("Flume rejected the sign-in token twice")
 
     def devices(self):
+        """List the account's meter sensors (device type 2)."""
         body = self.request("GET", "/users/{uid}/devices", params={"user": "false", "location": "false"})
         return [d for d in body.get("data") or [] if d.get("type") == 2]  # type 2 = meter sensor
 
@@ -808,12 +946,18 @@ class FlumeClient:
         return out
 
     def leak_active(self, dev):
+        """True if Flume's own leak detection currently flags a leak on this device."""
         body = self.request("GET", f"/users/{{uid}}/devices/{dev}/leaks/active")
         return any(isinstance(i, dict) and i.get("active") for i in body.get("data") or [])
 
 
 class FlumeMonitor:
+    """Polls Flume and raises flow alerts: sustained high flow, nonstop flow, quiet-hours use,
+    Flume's own leak flag, plus device offline/battery/API-down. Disabled at this site
+    ([flume] enabled = false).
+    """
     def __init__(self, cfg, alerter):
+        """Read thresholds from [flume] (all have code defaults)."""
         self.api = FlumeClient(cfg)
         self.alerter = alerter
         self.device_ids = [d.strip() for d in cfg.get("flume", "device_id").split(",") if d.strip()]
@@ -835,9 +979,13 @@ class FlumeMonitor:
         self.next_device_check = 0
 
     def label(self, dev):
+        """Short name for a meter in messages."""
         return "water meter" if len(self.devs) <= 1 else f"water meter ...{dev[-4:]}"
 
     def poll(self):
+        """Run one poll cycle if poll_seconds has elapsed. Alerts if the API keeps failing for
+        api_failure_minutes; clears when it recovers.
+        """
         now = time.time()
         if now < self.next_poll:
             return
@@ -863,6 +1011,7 @@ class FlumeMonitor:
             self.alerter.clear("flume_api", "Flume API responding again")
 
     def _check_devices(self):
+        """Refresh the device list (hourly) and alert on offline or low battery."""
         devs = self.api.devices()
         by_id = {d.get("id"): d for d in devs}
         missing = [x for x in self.device_ids if x not in by_id]
@@ -888,6 +1037,9 @@ class FlumeMonitor:
                 self.alerter.clear(f"flume_battery:{dev}", f"Flume {label} battery OK")
 
     def _poll_device(self, dev):
+        """Fetch recent per-minute usage and evaluate the four flow rules. The newest
+        data_delay_minutes are ignored because Flume uploads late.
+        """
         label = self.label(dev)
         lookback = max(self.high_min, self.cont_min, self.quiet_min if self.quiet else 0) + self.delay_min + 2
         series = self.api.minute_usage(dev, lookback)
@@ -900,6 +1052,7 @@ class FlumeMonitor:
         log.debug("Flume %s: last %d min, current %.2f gal/min", dev, len(values), current)
 
         def tail(n):
+            """Last n per-minute values, or None if fewer than n are available."""
             return values[-n:] if n > 0 and len(values) >= n else None
 
         # 1) sustained high flow (burst pipe, open hose)
@@ -956,6 +1109,9 @@ def site_name(cfg):
 
 
 def build(cfg, ephemeral=False):
+    """Create the shared pieces: (state_dir, State, Mailer, ZoomSMS or None, Alerter).
+    ephemeral=True uses in-memory state and creates no files, for CLI test commands.
+    """
     state_dir = cfg.get("general", "state_dir", "/var/lib/water-alert")
     if not ephemeral:
         os.makedirs(state_dir, exist_ok=True)
@@ -966,6 +1122,11 @@ def build(cfg, ephemeral=False):
 
 
 def cmd_run(cfg, args):
+    """Main service loop (what systemd runs). Starts the enabled monitors, emails 'Monitor
+    started', then every 15 s polls Flume, runs the Shelly watchdog and saves state. Every 12
+    h it force-refreshes the Zoom token to keep the refresh chain alive, raising a 'zoom_auth'
+    alert if that breaks. Stops cleanly on SIGTERM/SIGINT.
+    """
     _, state, mailer, sms, alerter = build(cfg)
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *a: stop.set())
@@ -1036,6 +1197,9 @@ def cmd_run(cfg, args):
 
 
 def cmd_zoom_auth(cfg, args):
+    """Interactive one-time Zoom sign-in: print the approval link, take back the pasted redirect
+    URL (or code), save tokens and show the signed-in user. Re-run after changing app scopes.
+    """
     _, _, _, sms, _ = build(cfg, ephemeral=True)
     if sms is None:
         raise SystemExit("[zoom] enabled = false in the config")
@@ -1063,12 +1227,14 @@ def cmd_zoom_auth(cfg, args):
 
 
 def cmd_test_email(cfg, args):
+    """Send a test email."""
     _, _, mailer, _, _ = build(cfg, ephemeral=True)
     mailer.send("Test email", f"Test from {site_name(cfg)} water alerts at {fmt_time()}.\nEmail alerts work.")
     print(f"Sent to {', '.join(mailer.to)}")
 
 
 def cmd_test_sms(cfg, args):
+    """Send a test text to every recipient, or to --to NUMBER. Exits non-zero if any send failed."""
     _, _, _, sms, _ = build(cfg, ephemeral=True)
     if sms is None:
         raise SystemExit("[zoom] enabled = false in the config")
@@ -1085,6 +1251,7 @@ def cmd_test_sms(cfg, args):
 
 
 def cmd_test_flume(cfg, args):
+    """Sign in to Flume and print devices, the last 15 minutes of flow and leak status."""
     api = FlumeClient(cfg)
     api.login()
     print(f"Signed in to Flume (user id {api.user_id})")
@@ -1105,6 +1272,9 @@ def cmd_test_flume(cfg, args):
 
 
 def cmd_simulate(cfg, args):
+    """Push a fake leak through the real alert path (texts + email, marked TEST). Uses in-memory
+    state, so it never affects live alerts.
+    """
     _, _, _, _, alerter = build(cfg, ephemeral=True)
     sensors = cfg.section("shelly_sensors")
     name = args.sensor or (next(iter(sensors.values())) if sensors else "Test sensor")
@@ -1115,6 +1285,7 @@ def cmd_simulate(cfg, args):
 
 
 def cmd_status(cfg, args):
+    """Print active alerts, last check-in per sensor and Zoom sign-in status (read-only)."""
     state_dir = cfg.get("general", "state_dir", "/var/lib/water-alert")
     data = read_json(os.path.join(state_dir, "state.json"), {})
     alerts = data.get("alerts", {})
@@ -1134,6 +1305,7 @@ def cmd_status(cfg, args):
 
 
 def main():
+    """Parse arguments, load config, set up logging and dispatch to a cmd_* function."""
     ap = argparse.ArgumentParser(description="Leak and flow alerts: Shelly Flood + Flume -> Zoom SMS + email")
     ap.add_argument("-c", "--config", default=DEFAULT_CONFIG)
     ap.add_argument("-v", "--verbose", action="store_true", help="debug logging")
